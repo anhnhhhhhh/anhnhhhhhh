@@ -4,7 +4,8 @@ import time
 from datetime import datetime, timedelta, date
 from threading import Lock
 from bs4 import BeautifulSoup
-import requests
+import requests 
+import tempfile
 import re
 import random
 import json
