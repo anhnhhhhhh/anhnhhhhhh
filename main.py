@@ -627,6 +627,7 @@ def send_welcome(message):
 │» /admin : Thông tin admin
 │» /spam : Spam SMS FREE
 │» /spamvip : Spam SMS VIP - Mua Vip 30k/Tháng
+│» /share : Free 400 - Vip 1k share trên lần
 │» info : Kiểm Tra Thông Tin fb bỏ /
 │» /yt : Kiểm Tra Thông Tin VD YOUTUBE .
 │» /video : Để Xem Video Chill.
