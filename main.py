@@ -1,30 +1,39 @@
-import telebot
-import subprocess
-import sys
-from requests import post, Session
+import aiohttp
+import asyncio
 import time
-import datetime
-from urllib.parse import urlparse
-import psutil
-import tempfile
-import random
-import string
-import os
+from datetime import datetime, timedelta, date
+from threading import Lock
+from bs4 import BeautifulSoup
 import requests
+import re
+import random
+import json
+import os
 import sqlite3
-from telebot import types
-from time import strftime
+import hashlib
+import zipfile
+from PIL import Image, ImageOps, ImageDraw, ImageFont
+from io import BytesIO
+from urllib.parse import urljoin, urlparse, urldefrag
+from telebot import TeleBot, types
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+THỜI_GIAN_CHỜ = timedelta(seconds=300)
+FREE_GIỚI_HẠN_CHIA_SẺ = 400
+VIP_GIỚI_HẠN_CHIA_SẺ = 1000
+viptime = 100
+ALLOWED_GROUP_ID = -1002201340697
 admin_diggory = "Trumdayhahaha" # ví dụ : để user name admin là @diggory347 bỏ dấu @ đi là đc
 name_bot = "vLong zZ"
 zalo = "0789041631"
+admin_id = "6435141966"
+admin_id_2 = '6216148625'
 web = "https://dichvukey.site/"
 facebook = "no"
 allowed_group_id = -1002201340697
-bot=telebot.TeleBot("7298886741:AAGGmigJ82QwjdfnXXzgDnJjszWxUAMWtvE") 
-print("Bot đã được khởi động thành công")
 users_keys = {}
 key = ""
+freeuser = []
 auto_spam_active = False
 last_sms_time = {}
 allowed_users = []
@@ -35,6 +44,25 @@ cursor = connection.cursor()
 last_command_time = {}
 
 
+user_cooldowns = {}
+share_count = {}
+global_lock = Lock()
+admin_mode = False
+share_log = []
+tool = 'https://dichvukey.site/'
+BOT_LINK = 'https://t.me/YourBotUsername'
+TOKEN = '7298886741:AAGGmigJ82QwjdfnXXzgDnJjszWxUAMWtvE'  
+bot = TeleBot(TOKEN)
+
+ADMIN_ID = 6435141966  # id admin
+admins = {6216148625, 6435141966, 178220800}
+bot_admin_list = {}
+cooldown_dict = {}
+allowed_users = []
+muted_users = {}
+
+def get_time_vietnam():
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 def check_command_cooldown(user_id, command, cooldown):
     current_time = time.time()
     
@@ -50,11 +78,11 @@ cursor.execute('''
         user_id INTEGER PRIMARY KEY,
         expiration_time TEXT
     )
-''')
+''') 
 connection.commit()
 
 def TimeStamp():
-  now = str(datetime.date.today())
+  now = str(date.today())
   return now
 
 
@@ -63,8 +91,8 @@ def load_users_from_database():
   rows = cursor.fetchall()
   for row in rows:
     user_id = row[0]
-    expiration_time = datetime.datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S')
-    if expiration_time > datetime.datetime.now():
+    expiration_time = datetime.strptime(row[1], '%Y-%m-%d %H:%M:%S')
+    if expiration_time > datetime.now():
       allowed_users.append(user_id)
 
 
@@ -83,6 +111,64 @@ def save_user_to_database(connection, user_id, expiration_time):
 ###
 ####
 start_time = time.time()
+
+def load_allowed_users():
+    try:
+        with open('admin_vip.txt', 'r') as file:
+            allowed_users = [int(line.strip()) for line in file]
+        return set(allowed_users)
+    except FileNotFoundError:
+        return set()
+
+vip_users = load_allowed_users()
+
+async def share_post(session, token, post_id, share_number):
+    headers = {
+        'accept': '*/*',
+        'accept-encoding': 'gzip, deflate',
+        'connection': 'keep-alive',
+        'content-length': '0',
+        'host': 'graph.facebook.com'
+    }
+    try:
+        url = f'https://graph.facebook.com/me/feed'
+        params = {
+            'link': f'https://m.facebook.com/{post_id}',
+            'published': '0',
+            'access_token': token
+        }
+        async with session.post(url, headers=headers, params=params) as response:
+            res = await response.json()
+            print(f"Chia sẻ bài viết thành công: {res}")
+    except Exception as e:
+        print(f"Lỗi khi chia sẻ bài viết: {e}")
+
+async def get_facebook_post_id(session, post_url):
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, như Gecko) Chrome/58.0.3029.110 Safari/537.3'
+        }
+
+        async with session.get(post_url, headers=headers) as response:
+            response.raise_for_status()
+            text = await response.text()
+
+        soup = BeautifulSoup(text, 'html.parser')
+        meta_tag = soup.find('meta', attrs={'property': 'og:url'})
+
+        if meta_tag and 'content' in meta_tag.attrs:
+            linkpost = meta_tag['content'].split('/')[-1]
+            async with session.post('https://scaninfo.vn/api/fb/getID.php?url=', data={"link": linkpost}) as get_id_response:
+                get_id_post = await get_id_response.json()
+                if 'success' in get_id_post:
+                    post_id = get_id_post["id"]
+                return post_id
+        else:
+            raise Exception("Không tìm thấy ID bài viết trong các thẻ meta")
+
+    except Exception as e:
+        return f"Lỗi: {e}"
+
 
 @bot.message_handler(commands=['time'])
 def handle_time(message):
@@ -125,15 +211,18 @@ def tiktok_command(message):
 
 @bot.message_handler(commands=['tool'])
 def send_tool_links(message):
+    markup = types.InlineKeyboardMarkup()
+    
     tool_links = [
-        ("https://www.mediafire.com/file/ypkld87i2x2ynpq/gopvip.py/file", "Link Tải Tool gộp vip nhiều chế độ"),
-        ("https://www.mediafire.com/file/00crrtkxut8oa7s/goliketiktokauto.py/file", "Link Tải Tool Golike Tiktok Auto Làm Nhiệm Vụ"),
-        ("https://dichvukey.site", "Link Tải Tool Gộp - Source Tool Gộp")
+        ("https://www.mediafire.com/file/ypkld87i2x2ynpq/gopvip.py/file", "Tool gộp vip"),
+        ("https://www.mediafire.com/file/00crrtkxut8oa7s/goliketiktokauto.py/file", "Tool Golike Tiktok"),
+        ("https://dichvukey.site", "Tool Gộp - Source")
     ]
     
-    message_text = "\n".join([f"{desc}: {link}" for link, desc in tool_links])
+    for link, desc in tool_links:
+        markup.add(types.InlineKeyboardButton(text=desc, url=link))
     
-    bot.reply_to(message, message_text)
+    bot.reply_to(message, "Chọn một tool từ bên dưới(2 cũng đc):", reply_markup=markup)
 ####
 #####
 video_url = 'https://v16m-default.akamaized.net/b7650db4ac7f717b7be6bd6a04777a0d/66a418a5/video/tos/useast2a/tos-useast2a-ve-0068-euttp/o4QTIgGIrNbkAPGKKLKteXyLedLE7IEgeSzeE2/?a=0&bti=OTg7QGo5QHM6OjZALTAzYCMvcCMxNDNg&ch=0&cr=0&dr=0&lr=all&cd=0%7C0%7C0%7C0&cv=1&br=2576&bt=1288&cs=0&ds=6&ft=XE5bCqT0majPD12cy-773wUOx5EcMeF~O5&mime_type=video_mp4&qs=0&rc=Mzk1OzY7PGdpZjxkOTQ3M0Bpajh1O2w5cmlzbzMzZjgzM0AuNWJgLi02NjMxLzBgXjUyYSNzNmptMmRjazFgLS1kL2Nzcw%3D%3D&vvpl=1&l=202407261543513F37EAD38E23B6263167&btag=e00088000'
@@ -150,7 +239,7 @@ def add_user(message):
 
     user_id = int(message.text.split()[1])
     allowed_users.append(user_id)
-    expiration_time = datetime.datetime.now() + datetime.timedelta(days=30)
+    expiration_time = datetime.now() + timedelta(days=30)
     connection = sqlite3.connect('user_data.db')
     save_user_to_database(connection, user_id, expiration_time)
     connection.close()
@@ -165,11 +254,6 @@ def add_user(message):
 
 load_users_from_database()
 
-
-
-
-
-
 def is_key_approved(chat_id, key):
     if chat_id in users_keys:
         user_key, timestamp = users_keys[chat_id]
@@ -181,6 +265,356 @@ def is_key_approved(chat_id, key):
                 del users_keys[chat_id]
     return False
 
+@bot.message_handler(commands=['share'])
+def share(message):
+    global bot_active, global_lock, admin_mode
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    current_time = datetime.now()
+
+
+    if not bot_active:
+        msg = bot.reply_to(message, 'Bot hiện đang tắt.')
+        time.sleep(10)
+        try:
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Error deleting message: {e}")
+        return
+
+    if chat_id != ALLOWED_GROUP_ID:
+        msg = bot.reply_to(message, 'Làm Trò Gì Khó Coi Vậy')
+        time.sleep(10)
+        try:
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Error deleting message: {e}")
+        return
+    
+    if admin_mode and user_id not in admins:
+        msg = bot.reply_to(message, 'Chế độ admin hiện đang bật, đợi tí đi.')
+        time.sleep(10)
+        try:
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Error deleting message: {e}")
+        return
+    
+    try:
+        global_lock.acquire()  
+        
+        args = message.text.split()
+        if user_id not in allowed_users and user_id not in freeuser:
+            bot.reply_to(message, 'bot chỉ hoạt động khi bạn mua key và get key bằng lệnh /laykey')
+            return
+        if len(args) != 3:
+            msg = bot.reply_to(message, '''
+╔══════════════════
+║<|> /laykey trước khi sài hoặc mua
+║<|> /key <key> để nhập key 
+║<|> ví dụ /key vLong
+║<|> /share {link_buff} {số lần chia sẻ}
+╚══════════════════''')
+            time.sleep(10)
+            try:
+                bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+            except telebot.apihelper.ApiTelegramException as e:
+                print(f"Error deleting message: {e}")
+            return
+
+        post_id, total_shares = args[1], int(args[2])
+
+        # Kiểm tra người dùng VIP hoặc Free
+        if user_id in allowed_users:
+            handle_vip_user(message, user_id, post_id, total_shares, current_time)
+        elif user_id in freeuser:
+            handle_free_user(message, user_id, post_id, total_shares, current_time)
+            
+    except Exception as e:
+        msg = bot.reply_to(message, f'Lỗi: {e}')
+        time.sleep(10)
+        try:
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Error deleting message: {e}")
+
+    finally:
+        if global_lock.locked():
+            global_lock.release()  
+
+def handle_vip_user(message, user_id, post_id, total_shares, current_time):
+    if user_id in user_cooldowns:
+        last_share_time = user_cooldowns[user_id]
+        if current_time < last_share_time + timedelta(seconds=viptime):
+            remaining_time = (last_share_time + timedelta(seconds=viptime) - current_time).seconds
+            msg = bot.reply_to(message, f'Bạn cần đợi {remaining_time} giây trước khi chia sẻ lần tiếp theo.\nvip Delay')
+            time.sleep(10)
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+            return
+    if total_shares > VIP_GIỚI_HẠN_CHIA_SẺ:
+        msg = bot.reply_to(message, f'Số lần chia sẻ vượt quá giới hạn {VIP_GIỚI_HẠN_CHIA_SẺ} lần.')
+        time.sleep(10)
+        bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        return
+     #phân file token khác nhau
+    file_path = 'token.txt'
+    with open(file_path, 'r') as file:
+        tokens = file.read().split('\n')
+
+    total_live = len(tokens)
+
+    sent_msg = bot.reply_to(message,
+        f'Bot Chia Sẻ Bài Viết\n\n'
+        f'║Số Lần Chia Sẻ: {total_shares}\n'
+        f'║Free Max 400 Share\n'
+        f'║{message.from_user.username} Đang Dùng Vip',
+        parse_mode='HTML'
+    )
+
+    bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+#check live token
+    if total_live == 0:
+        bot.edit_message_text(chat_id=message.chat.id, message_id=sent_msg.message_id, text='Không có token nào hoạt động.')
+        return
+
+    share_log.append({
+        'username': message.from_user.username,
+        'user_id': user_id,
+        'time': current_time.strftime('%Y-%m-%d %H:%M:%S'),
+        'post_id': post_id,
+        'total_shares': total_shares
+    })
+
+    async def share_with_delay(session, token, post_id, count):
+        await share_post(session, token, post_id, count)
+        await asyncio.sleep(1)
+
+    async def main():
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for i in range(total_shares):
+                token = random.choice(tokens)
+                share_number = share_count.get(user_id, 0) + 1
+                share_count[user_id] = share_number
+                tasks.append(share_with_delay(session, token, post_id, share_number))
+            await asyncio.gather(*tasks)
+
+    asyncio.run(main())
+
+    bot.edit_message_text(chat_id=message.chat.id, message_id=sent_msg.message_id, text='Đơn của bạn đã hoàn thành')
+
+def handle_free_user(message, user_id, post_id, total_shares, current_time):
+    if user_id in user_cooldowns:
+        last_share_time = user_cooldowns[user_id]
+        if current_time < last_share_time + THỜI_GIAN_CHỜ:
+            remaining_time = (last_share_time + THỜI_GIAN_CHỜ - current_time).seconds
+            msg = bot.reply_to(message, f'Bạn cần đợi {remaining_time} giây trước khi chia sẻ lần tiếp theo.')
+            time.sleep(10)
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+            return
+
+    if total_shares > FREE_GIỚI_HẠN_CHIA_SẺ:
+        msg = bot.reply_to(message, f'Số lần chia sẻ vượt quá giới hạn {FREE_GIỚI_HẠN_CHIA_SẺ} lần.')
+        time.sleep(10)
+        bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        return
+    #token free
+    file_path = 'token.txt'
+    with open(file_path, 'r') as file:
+        tokens = file.read().split('\n')
+
+    total_live = len(tokens)
+
+    sent_msg = bot.reply_to(message,
+        f'Bot Chia Sẻ Bài Viết\n\n'
+        f'║Số lần share: {total_shares}\n'
+        f'║Vip Max 1000 Share\n'
+        f'║{message.from_user.username} Đang Share Free',
+        parse_mode='HTML'
+    )
+
+    bot.delete_message(chat_id=message.chat.id, message_id=message.message_id)
+
+    if total_live == 0:
+        bot.edit_message_text(chat_id=message.chat.id, message_id=sent_msg.message_id, text='Không có token nào hoạt động.')
+        return
+
+    share_log.append({
+        'username': message.from_user.username,
+        'user_id': user_id,
+        'time': current_time.strftime('%Y-%m-%d %H:%M:%S'),
+        'post_id': post_id,
+        'total_shares': total_shares
+    })
+
+    async def share_with_delay(session, token, post_id, count):
+        await share_post(session, token, post_id, count)
+        await asyncio.sleep(1)
+
+    async def main():
+        async with aiohttp.ClientSession() as session:
+            tasks = []
+            for i in range(total_shares):
+                token = random.choice(tokens)
+                share_number = share_count.get(user_id, 0) + 1
+                share_count[user_id] = share_number
+                tasks.append(share_with_delay(session, token, post_id, share_number))
+            await asyncio.gather(*tasks)
+
+    asyncio.run(main())
+
+    user_cooldowns[user_id] = current_time
+
+    bot.edit_message_text(chat_id=message.chat.id, message_id=sent_msg.message_id, text='Đơn của bạn đã hoàn thành')
+@bot.message_handler(commands=['vip'])
+def handle_vip(message):
+    chat_id = message.chat.id
+    if message.from_user.id not in vip_users:
+        bot.reply_to(message, "Bạn không phải là thành viên VIP.")
+        return
+
+   
+
+
+@bot.message_handler(commands=['ls'])
+def sharelog(message):
+    if message.from_user.id in admins:
+        if not share_log:
+            bot.reply_to(message, 'chưa ai sử dụng hết')
+            return
+        
+        log_text = "Danh sách người đã sử dụng lệnh share:\n"
+        for log in share_log:
+            log_text += f"<blockquote>Lịch_Sử\n- User: {log['username']} (ID: {log['user_id']})\n- vào lúc {log['time']}\n- Post LINK: <a href='{log['post_id']}'>link</a>\n- Số lần chia sẻ: {log['total_shares']}\n</blockquote>"
+        
+        bot.reply_to(message, log_text, parse_mode='HTML')
+    else:
+        bot.reply_to(message, 'admin mới xem đc á m')
+@bot.message_handler(commands=['admod'])
+def handle_on(message):
+    global admin_mode
+    if message.from_user.id in admins:
+        admin_mode = True
+        bot.reply_to(message, "Chế độ admin đã bật.")
+    else:
+        bot.reply_to(message, "Bạn không có quyền bật chế độ admin.")
+
+@bot.message_handler(commands=['laykey'])
+def laykey(message):
+    bot.reply_to(message, text='VUI LÒNG ĐỢI TRONG GIÂY LÁT!')
+
+    with open('key.txt', 'a') as f:
+        f.close()
+
+    user_id = message.from_user.id  
+    string = f'GL-{user_id}+{TimeStamp()}'  
+    hash_object = hashlib.md5(string.encode())
+    key = str(hash_object.hexdigest())[:10]
+    print(key)
+    
+    url_key = requests.get(f'https://yeumoney.com/QL_api.php?token=da063767f0049a2621405eefffed86c5dbe4ab963ca41fbaae308c8155d74c35&format=json&url=https://dichvukey.site/key.html?key={key}').json()['shortenedUrl']
+    
+    text = f'''
+- KEY CỦA BẠN {get_time_vietnam()}
+- DÙNG LỆNH /key {{key}} ĐỂ TIẾP TỤC -
+ [Lưu ý: mỗi key chỉ có 1 người dùng]
+    '''
+
+    keyboard = InlineKeyboardMarkup()
+    url_button = InlineKeyboardButton(text="Get Key", url=url_key)
+    admin_button = InlineKeyboardButton(text="WED TẢI ALL TOOL", url="https://dichvukey.site/")
+    keyboard.add(url_button, admin_button)
+    
+    bot.reply_to(message, text, reply_markup=keyboard)
+    
+    admin_message = f"Key Của {user_id}: {key}\n bạn có thể đưa key này cho id người nhận"
+    bot.send_message(admin_id, admin_message)
+    admin2_message = f"Key Của {user_id}: {key}\n bạn có thể đưa key này cho id người nhận"
+    bot.send_message(admin_id_2, admin2_message)
+
+@bot.message_handler(commands=['key'])
+def key(message):
+    if len(message.text.split()) == 1:
+        bot.reply_to(message, 'CHƯA NHẬP KEY MÀ')
+        return
+
+    user_id = message.from_user.id
+    
+    key = message.text.split()[1]
+    string = f'GL-{user_id}+{TimeStamp()}'  
+    hash_object = hashlib.md5(string.encode())
+    expected_key = str(hash_object.hexdigest())[:10]
+    if key == expected_key:
+        freeuser.append(user_id)
+        bot.reply_to(message, 'KEY ĐÚNG BẠN CÓ THỂ TIẾP TỤC SỬ DỤNG LỆNH')
+    else:
+        bot.reply_to(message, 'KEY SAI R GET LẠI THỬ XEM HOẶC IB CHO ADMIN')
+
+
+@bot.message_handler(commands=['unadmod'])
+def handle_off(message):
+    global admin_mode
+    if message.from_user.id in admins:
+        admin_mode = False
+        bot.reply_to(message, "Chế độ admin đã tắt.")
+    else:
+        bot.reply_to(message, "Bạn không có quyền tắt chế độ admin.")
+@bot.message_handler(commands=['off'])
+def bot_off(message):
+    global bot_active
+    if message.from_user.id in admins:
+        bot_active = False
+        bot.reply_to(message, 'Bot đã được tắt.')
+    else:
+        bot.reply_to(message, 'Bạn không có quyền thực hiện thao tác này.')
+@bot.message_handler(commands=['on'])
+def bot_on(message):
+    global bot_active
+    if message.from_user.id in admins:
+        bot_active = True
+        bot.reply_to(message, 'Bot đã được bật.')
+    else:
+        bot.reply_to(message, 'Bạn không có quyền thực hiện thao tác này.')
+@bot.message_handler(commands=['code'])
+def handle_code_command(message):
+    # Tách lệnh và URL từ tin nhắn
+    command_args = message.text.split(maxsplit=1)
+
+    # Kiểm tra xem URL có được cung cấp không
+    if len(command_args) < 2:
+        bot.reply_to(message, "Vui lòng cung cấp url sau lệnh /code. Ví dụ: /code https://vlongzZ.com")
+        return
+
+    url = command_args[1]
+    domain = urlparse(url).netloc
+    file_name = f"{domain}.txt"
+    
+    try:
+        # Lấy nội dung HTML từ URL
+        response = requests.get(url)
+        response.raise_for_status()  # Xảy ra lỗi nếu có lỗi HTTP
+
+        # Lưu nội dung HTML vào file
+        with open(file_name, 'w', encoding='utf-8') as file:
+            file.write(response.text)
+
+        # Gửi file về người dùng
+        with open(file_name, 'rb') as file:
+            bot.send_document(message.chat.id, file, caption=f"HTML của trang web {url}")
+
+        # Phản hồi tin nhắn gốc
+        bot.reply_to(message, "Đã gửi mã nguồn HTML của trang web cho bạn.")
+
+    except requests.RequestException as e:
+        bot.reply_to(message, f"Đã xảy ra lỗi khi tải trang web: {e}")
+
+    finally:
+        # Đảm bảo xóa file sau khi gửi
+        if os.path.exists(file_name):
+            try:
+                os.remove(file_name)
+            except Exception as e:
+                bot.reply_to(message, f"Đã xảy ra lỗi khi xóa file: {e}")
 @bot.message_handler(commands=['vlong'])
 def send_welcome(message):
    
@@ -232,7 +666,16 @@ last_usage = {}
 def spam(message):
     user_id = message.from_user.id
     current_time = time.time()
-
+    if not bot_active:
+        msg = bot.reply_to(message, 'Bot hiện đang tắt.')
+        time.sleep(10)
+        try:
+            bot.delete_message(chat_id=message.chat.id, message_id=msg.message_id)
+        except telebot.apihelper.ApiTelegramException as e:
+            print(f"Error deleting message: {e}")
+        return
+    if admin_mode and user_id not in admins:
+        msg = bot.reply_to(message, 'có lẽ admin đang fix gì đó hãy đợi xíu')
     if user_id in last_usage and current_time - last_usage[user_id] < 100:
         bot.reply_to(message, f"Vui lòng đợi {100 - (current_time - last_usage[user_id]):.1f} giây trước khi sử dụng lệnh lại.")
         return
@@ -366,25 +809,20 @@ def supersms(message):
 
 # Xử lý lệnh /voice
 API_URL = "https://scaninfo.vn/api/gg/voice.php?text={}"
+
 @bot.message_handler(commands=['voice'])
 def handle_voice_command(message):
-    try:
-        text = message.text.split('/voice ', 1)[1].strip()
-        api_request_url = API_URL.format(requests.utils.quote(text))
-        response = requests.get(api_request_url)
-        if response.status_code == 200:
-            audio_data = response.content
-            if audio_data:
-                bot.send_voice(message.chat.id, audio_data, reply_to_message_id=message.message_id)
-            else:
-                bot.reply_to(message, f"@{message.from_user.username} Không thể tạo giọng nói từ văn bản này.")
+    text = message.text.split('/voice ', 1)[1].strip()
+    api_request_url = API_URL
+    response = requests.post(api_request_url, data={'text': text})
+    if response.status_code == 200:
+        audio_data = response.content
+        if audio_data:
+            bot.send_voice(message.chat.id, audio_data, caption=f"Nội dung: {text}", reply_to_message_id=message.message_id)
         else:
-            bot.reply_to(message, f"@{message.from_user.username} Đã xảy ra lỗi khi chuyển đổi văn bản thành giọng nói.")
-    except IndexError:
-        bot.reply_to(message, f"@{message.from_user.username} Vui lòng nhập văn bản sau lệnh /voice.")
-    except Exception as e:
-        bot.reply_to(message, f"@{message.from_user.username} Lỗi không xác định: {str(e)}")
-
+            bot.reply_to(message, f"@{message.from_user.username} Không thể tạo giọng nói từ văn bản này.")
+    else:
+        bot.reply_to(message, f"@{message.from_user.username} Đã xảy ra lỗi khi chuyển đổi văn bản thành giọng nói.")
 
 ADMIN_NAME = "vLong zZ"
 ADMIN_NAME1 = "Mạnh Offical"
@@ -442,57 +880,23 @@ def handle_reset(message):
         bot.reply_to(message, "Bạn không có quyền truy cập vào lệnh này!")
 ####
 @bot.message_handler(commands=['tv'])
-def handle_tv(message):
-    # Gửi liên kết để thay đổi ngôn ngữ giao diện với định dạng HTML
-    bot.reply_to(message, 'Nhấp <a href="https://t.me/setlanguage/abcxyz">Vào Đây</a> Để Đổi Ngôn Ngữ Sang Tiếng Việt', parse_mode='HTML')
-############
-
-
-
-
-
-@bot.message_handler(commands=['code'])
-def handle_code_command(message):
-    # Tách lệnh và URL từ tin nhắn
-    command_args = message.text.split(maxsplit=1)
-
-    # Kiểm tra xem URL có được cung cấp không
-    if len(command_args) < 2:
-        bot.reply_to(message, "Vui lòng cung cấp url sau lệnh /code. Ví dụ: /code https://vlongzZ.com")
-        return
-
-    url = command_args[1]
-    domain = urlparse(url).netloc
-    file_name = f"{domain}.txt"
+def tieng_viet(message):
+    chat_id = message.chat.id
+    message_id = message.message_id
     
+    keyboard = types.InlineKeyboardMarkup()
+    url_button = types.InlineKeyboardButton("Tiếng Việt 🇻🇳", url='https://t.me/setlanguage/abcxyz')
+    keyboard.add(url_button)
+    
+    bot.send_message(chat_id, 'Click Vào Nút "<b>Tiếng Việt</b>" để đổi thành tv VN in đờ bét.', reply_markup=keyboard, parse_mode='HTML')
+    
+    # Delete user's command message
     try:
-        # Lấy nội dung HTML từ URL
-        response = requests.get(url)
-        response.raise_for_status()  # Xảy ra lỗi nếu có lỗi HTTP
+        bot.delete_message(chat_id, message_id)
+    except Exception as e:
+        bot.send_message(chat_id, f"Không thể xóa tin nhắn: {e}", parse_mode='HTML')
 
-        # Lưu nội dung HTML vào file
-        with open(file_name, 'w', encoding='utf-8') as file:
-            file.write(response.text)
-
-        # Gửi file về người dùng
-        with open(file_name, 'rb') as file:
-            bot.send_document(message.chat.id, file, caption=f"HTML của trang web {url}")
-
-        # Phản hồi tin nhắn gốc
-        bot.reply_to(message, "Đã gửi mã nguồn HTML của trang web cho bạn.")
-
-    except requests.RequestException as e:
-        bot.reply_to(message, f"Đã xảy ra lỗi khi tải trang web: {e}")
-
-    finally:
-        # Đảm bảo xóa file sau khi gửi
-        if os.path.exists(file_name):
-            try:
-                os.remove(file_name)
-            except Exception as e:
-                bot.reply_to(message, f"Đã xảy ra lỗi khi xóa file: {e}")
-
-
-
-
-bot.polling()
+############
+if __name__ == "__main__":
+    bot_active = True
+    bot.infinity_polling()
